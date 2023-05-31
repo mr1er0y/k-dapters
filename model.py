@@ -1,7 +1,8 @@
 import torch
 from torch import nn
 import numpy as np
-from transformers import RobertaTokenizer, RobertaModel, RobertaConfig, RobertaForMaskedLM, AutoModel, AutoTokenizer, AutoConfig
+from transformers import RobertaTokenizer, RobertaModel, RobertaConfig, RobertaForMaskedLM, AutoModel, AutoTokenizer, \
+    AutoConfig
 from modeling_roberta import PrefixRobertaModel
 from pytorch_transformers.my_modeling_roberta import RobertaModelwithAdapter
 from loss import EMDLoss, SupConLoss
@@ -9,6 +10,7 @@ from loss import EMDLoss, SupConLoss
 
 class RobertaClassifier(nn.Module):
     """Fine-tune PLMs to directly predict categorical emotions."""
+
     def __init__(self, check_point, num_class):
         super(RobertaClassifier, self).__init__()
         self.bert = AutoModel.from_pretrained(check_point)
@@ -35,6 +37,7 @@ class RobertaClassifier(nn.Module):
 
 class AdapterRobertaClassifier(nn.Module):
     """Fine-tune pre-trained knowledge adapter to predict categorical emotions."""
+
     def __init__(self, args, num_class):
         super(AdapterRobertaClassifier, self).__init__()
         self.bert = RobertaModelwithAdapter(args)
@@ -57,6 +60,7 @@ class AdapterRobertaClassifier(nn.Module):
 
 class PrefixRobertaClassifier(nn.Module):
     """Fine-tune RoBERTa to predict categorical emotions with prefix-tuning."""
+
     def __init__(self, check_point, hidden_size, num_class):
         super(PrefixRobertaClassifier, self).__init__()
         self.bert = PrefixRobertaModel.from_pretrained(check_point)
@@ -71,7 +75,7 @@ class PrefixRobertaClassifier(nn.Module):
 
     def forward(self, x, mask):
         x, pfix = self.bert(x, prefix=self.prefix, attention_mask=mask)
-        #x = x[:, 3, :].squeeze(1)
+        # x = x[:, 3, :].squeeze(1)
         x = pfix[:, 0, :].squeeze(1)
         x = self.dropout(x)
         x = self.dense1(x)
@@ -82,6 +86,7 @@ class PrefixRobertaClassifier(nn.Module):
 
 class VADRobertaClassifier(nn.Module):
     """Fine-tune RoBERTa to predict categorical emotions and VAD scores"""
+
     def __init__(self, check_point, hidden_size, num_class):
         super(VADRobertaClassifier, self).__init__()
         self.bert = RobertaForMaskedLM.from_pretrained(check_point)
@@ -107,6 +112,7 @@ class AdapterSICLRobertaClassifier(nn.Module):
     Supervised instance-level contrastive learning which directly contrast each instance with
     the corresponding emotion prototype.
     """
+
     def __init__(self, args, num_class):
         super(AdapterSICLRobertaClassifier, self).__init__()
         self.args = args
@@ -134,19 +140,19 @@ class AdapterSICLRobertaClassifier(nn.Module):
         :return: The SICL loss.
         """
         '''Compute the distance between current instance and the corresponding label prototypes.'''
-        logits = torch.div(torch.matmul(x, vad_label.unsqueeze(2)).squeeze(1), temperature) #[B, 1]
+        logits = torch.div(torch.matmul(x, vad_label.unsqueeze(2)).squeeze(1), temperature)  # [B, 1]
 
         '''Compute the distance between current instance and all label prototypes.'''
         if self.args["CUDA"]:
-            label_VAD = torch.stack(label_VAD, dim=0).cuda() #[label_num, 3]
+            label_VAD = torch.stack(label_VAD, dim=0).cuda()  # [label_num, 3]
         else:
-            label_VAD = torch.stack(label_VAD, dim=0) #[label_num, 3]
-        label_VAD = label_VAD.unsqueeze(0).repeat(logits.shape[0], 1, 1).permute(0, 2, 1) #[B, 3, label_num]
-        all_logits = torch.div(torch.matmul(x, label_VAD).squeeze(1), temperature) # [B, label_num]
+            label_VAD = torch.stack(label_VAD, dim=0)  # [label_num, 3]
+        label_VAD = label_VAD.unsqueeze(0).repeat(logits.shape[0], 1, 1).permute(0, 2, 1)  # [B, 3, label_num]
+        all_logits = torch.div(torch.matmul(x, label_VAD).squeeze(1), temperature)  # [B, label_num]
 
         '''Compute contrastive loss.'''
         all_logits = torch.exp(all_logits)
-        loss = logits-torch.log(all_logits.sum(1).unsqueeze(1))
+        loss = logits - torch.log(all_logits.sum(1).unsqueeze(1))
         return -loss.mean()
 
     def mse_loss(self, x, vad_label):
@@ -172,6 +178,7 @@ class AdapterSCCLClassifier(nn.Module):
     Supervised cluster-level contrastive learning which computes cluster-level VAD for each emotion and
     contrast with the emotion prototypes.
     """
+
     def __init__(self, args, num_class):
         super(AdapterSCCLClassifier, self).__init__()
         if "adapter" in args['model_checkpoint']:
@@ -197,18 +204,19 @@ class AdapterSCCLClassifier(nn.Module):
         """
         '''Mask out unrelated instances for each emotion, and compute the cluster-level representation
          with the predicted VADs.'''
-        masked_logits = one_hot_vad_labels.unsqueeze(2) * x.repeat(one_hot_vad_labels.shape[0], 1, 1) #[label_num, B, 3]
-        logits = torch.mean(masked_logits, dim=1) #[label_num, 3]
+        masked_logits = one_hot_vad_labels.unsqueeze(2) * x.repeat(one_hot_vad_labels.shape[0], 1,
+                                                                   1)  # [label_num, B, 3]
+        logits = torch.mean(masked_logits, dim=1)  # [label_num, 3]
 
         '''Compute logits for all clusters.'''
-        logits = torch.div(torch.matmul(logits, label_VAD.T), temperature) #[label_num, label_num]
+        logits = torch.div(torch.matmul(logits, label_VAD.T), temperature)  # [label_num, label_num]
 
         '''Extract the logits to be maximised.'''
-        up_logits = torch.diag(logits) #[label_num]
+        up_logits = torch.diag(logits)  # [label_num]
 
         '''Compute contrastive loss.'''
         all_logits = torch.log(torch.sum(torch.exp(logits), dim=1))
-        loss = (up_logits-all_logits)*label_mask
+        loss = (up_logits - all_logits) * label_mask
         return -loss.mean()
 
     def mse_loss(self, x, vad_label):
@@ -231,6 +239,7 @@ class ConcatVADRobertaClassifier(nn.Module):
     """
     Concat the representation updated by categorical emotion detection and VAD prediction.
     """
+
     def __init__(self, check_point, hidden_size, num_class):
         super(ConcatVADRobertaClassifier, self).__init__()
         self.bert = RobertaModel.from_pretrained(check_point)
@@ -239,7 +248,7 @@ class ConcatVADRobertaClassifier(nn.Module):
         self.dense1 = nn.Linear(hidden_size, hidden_size)
         self.dense2 = nn.Linear(hidden_size, hidden_size)
         self.dropout = nn.Dropout(self.config.hidden_dropout_prob)
-        self.dense21 = nn.Linear(2*hidden_size, num_class)
+        self.dense21 = nn.Linear(2 * hidden_size, num_class)
         self.dense22 = nn.Linear(hidden_size, 3)
 
     def forward(self, x, mask):
@@ -259,6 +268,7 @@ class EMDRobertaClassifier(nn.Module):
     """
     The prediction model designed for EMD loss.
     """
+
     def __init__(self, check_point, label_VAD, num_class):
         super(EMDRobertaClassifier, self).__init__()
         self.bert = RobertaModel.from_pretrained(check_point)
@@ -293,7 +303,6 @@ class EMDRobertaClassifier(nn.Module):
         self.d_head.weight = nn.Parameter(torch.unsqueeze(self.d_sorted_values, 0))
 
         self.activation = nn.Sigmoid()'''
-
 
     def forward(self, x, mask):
         x = self.bert(x, attention_mask=mask)[0]
@@ -408,6 +417,7 @@ class PredcitVADandClassfromLogit(torch.nn.Module):
 
 class ConRobertaClassifier(nn.Module):
     """Fine-tune RoBERTa model on categorical emotion detection and vanilla supervised contrastive learning."""
+
     def __init__(self, args, num_class):
         super(ConRobertaClassifier, self).__init__()
         self.bert = RobertaModel.from_pretrained(args['model_checkpoint'])
